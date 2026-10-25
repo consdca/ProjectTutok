@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>PROJECT: TUTOK 3D</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>html,body{margin:0;height:100%;background:#050708;overflow:hidden}canvas{position:fixed;inset:0;width:100%;height:100%;display:block}</style></head><body>
+<canvas id="g"></canvas><canvas id="u"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const W=1280,H=720,PI=Math.PI,VAL_YAW=.35,VFOV=70.53;
+const C={ACC:0x00E5FF,DACC:0x0891A5,BLACK:0x050708,CHAR:0x161B1F,WHITE:0xE9FBFF};
+const hx=h=>'#'+h.toString(16).padStart(6,'0');
+const cv=document.getElementById('u'),ctx=cv.getContext('2d');
+const R=new THREE.WebGLRenderer({canvas:document.getElementById('g'),antialias:true});R.autoClear=false;R.setClearColor(0x050808);
+const cam=new THREE.PerspectiveCamera(VFOV,1,1,3000),gcam=new THREE.PerspectiveCamera(VFOV,1,.1,3000);
+const scene=new THREE.Scene(),gscene=new THREE.Scene();
+let winW,winH,vs=1,offX=0,offY=0;
+function resize(){winW=innerWidth;winH=innerHeight;const d=devicePixelRatio||1;cv.width=winW*d;cv.height=winH*d;R.setPixelRatio(d);R.setSize(winW,winH,false);vs=Math.min(winW/W,winH/H);offX=(winW-W*vs)/2;offY=(winH-H*vs)/2;cam.aspect=gcam.aspect=winW/winH;cam.updateProjectionMatrix();gcam.updateProjectionMatrix()}
+addEventListener('resize',resize);
+
+// ---------- data ----------
+const MENU=0,SEL=1,SET=2,CD=3,RUN=4,PAUSE=5,RES=6;
+const HEAD=0,GRID=1,TRACK=2,FLICK=3,STRAFE=4;
+const modeName=["HEADSHOT TRAINING","GRIDSHOT","TRACKING","FLICKSHOT TRAINING","STRAFE & COUNTER-STRAFE"];
+const modeShort=["HEADSHOT","GRIDSHOT","TRACKING","FLICKSHOT","STRAFE"];
+const modeDesc=[["Shoot humanoid targets.","Aim for the HEAD!","Head 100 / Body 30"],["3x3 grid, 3 targets at a","time. Hit one and a new","one appears elsewhere."],["Keep the crosshair on the","moving target. It fires","automatically on target."],["Center, then left or right,","then back to center.","Flick fast and precise."],["Stationary target. Moving","ruins your aim: tap the","opposite key, then shoot."]];
+const chNames=["CROSSHAIR: LARGE (STOCK)","CROSSHAIR: MEDIUM","CROSSHAIR: SMALL","CROSSHAIR: TENZ","CROSSHAIR: DOT"];
+const S_SM=.095,S_MD=.135,S_LG=.19,CAP=104.76;
+let state=MENU,resumeState=RUN,settingsFrom=MENU,mode=HEAD,mouseX=W/2,mouseY=H/2,animT=0;
+let sens=.07,moveSpeed=450,soundOn=true,typingSens=false,sensStr='',curCH=0,dragSlider=-1;
+let score=0,shotsFired=0,shotsHit=0,reactSum=0,reactN=0,timeLeft=30,sessionTime=0,countdown=3,lastMoveTime=-10;
+let px=0,py=150,pz=400,pvx=0,pvz=0,yaw=-90,pitch=0,kW=0,kA=0,kS=0,kD=0,fireTimer=0,muzzleT=0,tracerT=0,hitT=0,hitHead=false;
+let nT=3,flickPhase=0,strafeLastX=0,Z=0,noLock=false,gotLock=false;
+const GN=3,MAXT=6,MAXP=300,MAXPOP=16;
+const tg=Array.from({length:MAXT},()=>({on:false,kind:0,x:0,y:0,z:-550,r:20,vx:0,vy:0,spawn:0,life:0,hp:100,dirT:0,acq:false,slot:-1}));
+const slotUsed=Array(9).fill(false),slotX=[],slotY=[];
+for(let r=0;r<GN;r++)for(let c=0;c<GN;c++){slotX.push((c-1)*160);slotY.push(270-(r-1)*160)}
+const pt=Array.from({length:MAXP},()=>({on:false,x:0,y:0,z:0,vx:0,vy:0,vz:0,life:0,max:1,c:0}));
+const pops=Array.from({length:MAXPOP},()=>({on:false,x:0,y:0,z:0,life:0,s:'',c:0}));
+const menuB=[{x:490,y:300,w:300,h:56,label:"START TRAINING"},{x:490,y:380,w:300,h:56,label:"SETTINGS"},{x:490,y:460,w:300,h:56,label:"EXIT"}];
+const selB=[0,1,2,3,4].map(i=>({x:50+i*240,y:190,w:220,h:340,label:String(i+1)})).concat([{x:50,y:600,w:200,h:50,label:"BACK"}]);
+const pauseB=[{x:490,y:270,w:300,h:52,label:"RESUME"},{x:490,y:336,w:300,h:52,label:"RESTART"},{x:490,y:402,w:300,h:52,label:"SETTINGS"},{x:490,y:468,w:300,h:52,label:"MAIN MENU"}];
+const resB=[{x:400,y:560,w:220,h:56,label:"RETRY"},{x:660,y:560,w:220,h:56,label:"MAIN MENU"}];
+const setB=[{x:490,y:440,w:300,h:46,label:"SOUND: ON"},{x:490,y:500,w:300,h:46,label:"CROSSHAIR"},{x:490,y:580,w:300,h:56,label:"BACK"}];
+const sliders=[{x:400,y:250,w:480,lo:.01,hi:2,label:"MOUSE SENSITIVITY",get:()=>sens,set:v=>sens=v},{x:400,y:350,w:480,lo:150,hi:600,label:"MOVEMENT SPEED",get:()=>moveSpeed,set:v=>moveSpeed=v}];
+const frand=(a,b)=>a+(b-a)*Math.random(),clampf=(v,a,b)=>v<a?a:v>b?b:v;
+const speed=()=>Math.hypot(pvx,pvz);
+
+// ---------- sound (WebAudio port of the WAV synth) ----------
+const SR=22050;let AC=null,snd=[],lcg=12345;
+const nrand=()=>{lcg=(Math.imul(lcg,1664525)+1013904223)>>>0;return((lcg>>>8)&0xFFFF)/32768-1},urand=(a,b)=>a+(b-a)*(nrand()*.5+.5);
+function mk(n,fn){const b=AC.createBuffer(1,n,SR);fn(b.getChannelData(0),n);return b}
+function synthBreak(lo,hi,m){const K=7,ts=[],fr=[],dc=[],am=[];for(let k=0;k<K;k++){ts.push(urand(0,.09));fr.push(urand(lo,hi));dc.push(urand(22,48));am.push(urand(.12,.28))}
+ return mk(.3*SR|0,(f,n)=>{let prev=0;for(let i=0;i<n;i++){const t=i/SR,nz=nrand(),h=nz-prev;prev=nz;let v=h*.22*Math.exp(-t*70);for(let k=0;k<K;k++)if(t>=ts[k]){const tt=t-ts[k];v+=am[k]*Math.sin(2*PI*fr[k]*tt)*Math.exp(-tt*dc[k])}f[i]=Math.tanh(v)*m*(t<.001?t/.001:1)*((n-i)<SR/50?(n-i)/(SR/50):1)}})}
+function synthShot(m){return mk(.05*SR|0,(f,n)=>{let lp=0;for(let i=0;i<n;i++){const t=i/SR;lp+=.25*(nrand()-lp);f[i]=Math.tanh(lp*2*Math.exp(-t*90)+Math.sin(2*PI*160*t)*Math.exp(-t*60)*.6)*m*(t<.001?t/.001:1)}})}
+function initSound(){if(AC)return;try{AC=new(window.AudioContext||window.webkitAudioContext)();lcg=12345;snd=[synthShot(.22),synthBreak(2200,5200,.55),synthBreak(3200,7200,.62)]}catch(e){AC=null}}
+function playSnd(i){if(!soundOn||!AC||!snd[i])return;try{if(AC.state=='suspended')AC.resume();const s=AC.createBufferSource();s.buffer=snd[i];s.connect(AC.destination);s.start()}catch(e){}}
+
+// ---------- 3D scene ----------
+const gp=[];for(let x=-1000;x<=1000;x+=100)gp.push(x,0,-1000,x,0,1000,x,0,-600,x,500,-600);
+for(let z=-1000;z<=1000;z+=100)gp.push(-1000,0,z,1000,0,z);
+for(let y=0;y<=500;y+=100)gp.push(-1000,y,-600,1000,y,-600);
+const gg=new THREE.BufferGeometry();gg.setAttribute('position',new THREE.Float32BufferAttribute(gp,3));
+scene.add(new THREE.LineSegments(gg,new THREE.LineBasicMaterial({color:C.ACC,transparent:true,opacity:.14})));
+const ax=new THREE.BufferGeometry();ax.setAttribute('position',new THREE.Float32BufferAttribute([-1000,0,0,1000,0,0],3));
+scene.add(new THREE.Line(ax,new THREE.LineBasicMaterial({color:C.ACC,transparent:true,opacity:.3})));
+const sg=new THREE.SphereGeometry(1,20,16),bgm=new THREE.BoxGeometry(1,1,1),tm=[];
+for(let i=0;i<MAXT;i++){const g=new THREE.Group(),h=new THREE.Mesh(sg,new THREE.MeshBasicMaterial()),b=new THREE.Mesh(bgm,new THREE.MeshBasicMaterial());g.add(h,b);g.visible=false;scene.add(g);tm.push({g,h,b})}
+const pPos=new Float32Array(MAXP*3),pCol=new Float32Array(MAXP*3),pg=new THREE.BufferGeometry();
+pg.setAttribute('position',new THREE.BufferAttribute(pPos,3));pg.setAttribute('color',new THREE.BufferAttribute(pCol,3));
+scene.add(Object.assign(new THREE.Points(pg,new THREE.PointsMaterial({size:4,sizeAttenuation:false,vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false})),{frustumCulled:false}));
+const gun=new THREE.Group(),bas=c=>new THREE.MeshBasicMaterial({color:c});
+const gBody=new THREE.Mesh(bgm,bas(C.CHAR));gBody.scale.set(4,6,24);
+const gGrip=new THREE.Mesh(bgm,bas(C.DACC));gGrip.scale.set(2.5,9,4.5);gGrip.position.set(0,-5,5);gGrip.rotation.x=20*PI/180;
+const gFlash=new THREE.Mesh(new THREE.SphereGeometry(3.5,8,8),bas(C.WHITE));gFlash.position.z=-12;
+gun.add(gBody,gGrip,gFlash);gscene.add(gun);
+const trg=new THREE.BufferGeometry();trg.setAttribute('position',new THREE.Float32BufferAttribute([22,-18,-40,0,0,-1000],3));
+const trM=new THREE.LineBasicMaterial({color:C.ACC,transparent:true}),tracer=new THREE.Line(trg,trM);gscene.add(tracer);
+resize();
+
+// ---------- ray / hit ----------
+function getRay(){const s=clampf((speed()/moveSpeed-.08)/.92,0,1)*(mode==STRAFE?2.5:1.5),a=frand(0,2*PI),d=Math.sqrt(frand(0,1))*s;
+ const ry=(yaw+Math.cos(a)*d)*PI/180,rp=(pitch+Math.sin(a)*d)*PI/180;return[Math.cos(ry)*Math.cos(rp),Math.sin(rp),Math.sin(ry)*Math.cos(rp)]}
+function hitSphere(ox,oy,oz,dx,dy,dz,cx,cy,cz,r){const vx=ox-cx,vy=oy-cy,vz=oz-cz,b=2*(dx*vx+dy*vy+dz*vz),c=vx*vx+vy*vy+vz*vz-r*r,d=b*b-4*c;if(d<0)return -1;const t=(-b-Math.sqrt(d))/2;return t>0?t:-1}
+function hitBox(ox,oy,oz,dx,dy,dz,a){let tmin=-Infinity,tmax=Infinity;const o=[ox,oy,oz],d=[dx,dy,dz];
+ for(let k=0;k<3;k++){let t1=(a[k]-o[k])/d[k],t2=(a[k+3]-o[k])/d[k];if(t1>t2)[t1,t2]=[t2,t1];if(t1>tmin)tmin=t1;if(t2<tmax)tmax=t2;if(tmin>tmax)return -1}return tmin>0?tmin:-1}
+function hitTest(dx,dy,dz){let best=1e5,hi=-1;Z=0;
+ for(let i=0;i<nT;i++){const t=tg[i];if(!t.on)continue;const s=hitSphere(px,py,pz,dx,dy,dz,t.x,t.y,t.z,t.r);
+  if(s>0&&s<best){best=s;hi=i;Z=1}else if(t.kind==0){const b=hitBox(px,py,pz,dx,dy,dz,[t.x-1.5*t.r,t.y-6*t.r,t.z-t.r,t.x+1.5*t.r,t.y-t.r,t.z+t.r]);if(b>0&&b<best){best=b;hi=i;Z=2}}}
+ return hi}
+
+// ---------- targets / fx ----------
+function burst(bx,by,bz,n,c,sp){for(let k=0;k<n;k++){const p=pt.find(q=>!q.on);if(!p)break;const a=frand(0,2*PI),e=frand(-PI/2,PI/2),s=frand(.3,1)*sp;
+ Object.assign(p,{on:true,x:bx,y:by,z:bz,vx:Math.cos(a)*Math.cos(e)*s,vy:Math.sin(e)*s,vz:Math.sin(a)*Math.cos(e)*s,life:frand(.3,.7),c});p.max=p.life}}
+function addPopup(x,y,z,s,c){const p=pops.find(q=>!q.on);if(p)Object.assign(p,{on:true,x,y,z,life:.8,s,c})}
+function farFromOthers(self,tx,ty,m){for(let i=0;i<nT;i++){if(i==self||!tg[i].on)continue;if((tg[i].x-tx)**2+(tg[i].y-ty)**2<m*m)return false}return true}
+function spawn(i){const t=tg[i];Object.assign(t,{on:true,vx:0,vy:0,hp:100,life:0,spawn:sessionTime,acq:false,dirT:0,z:-550});
+ switch(mode){
+ case HEAD:t.kind=0;t.r=20;t.life=2.5;for(let k=0;k<30;k++){t.x=frand(-400,400);t.y=frand(100,300);if(farFromOthers(i,t.x,t.y,170))break}break;
+ case GRID:{const old=t.slot;if(old>=0)slotUsed[old]=false;let s,k=0;do{s=Math.random()*9|0;k++}while((slotUsed[s]||s==old)&&k<500);slotUsed[s]=true;t.slot=s;t.kind=1;t.r=45;t.x=slotX[s];t.y=slotY[s];break}
+ case TRACK:{t.kind=1;t.r=40;t.x=frand(-300,300);t.y=frand(50,250);const a=frand(0,2*PI),sp=frand(200,400);t.vx=Math.cos(a)*sp;t.vy=Math.sin(a)*sp;t.dirT=frand(.7,1.8);break}
+ case FLICK:t.kind=1;t.r=30;if(flickPhase==0){t.x=0;t.y=150;flickPhase=1}else{const sd=Math.random()<.5?1:-1;t.x=sd*frand(200,400);t.y=150+frand(-50,50);flickPhase=0}break;
+ case STRAFE:t.kind=0;t.r=18;t.y=150;for(let k=0;k<30;k++){t.x=frand(-350,350);if(Math.abs(t.x-strafeLastX)>200)break}strafeLastX=t.x;break}}
+function updateTargets(dt){for(let i=0;i<nT;i++){const t=tg[i];if(!t.on)continue;
+ if(mode==HEAD){t.life-=dt;if(t.life<=0)spawn(i)}
+ else if(mode==TRACK){t.x+=t.vx*dt;t.y+=t.vy*dt;
+  if(t.x<-450){t.x=-450;t.vx=Math.abs(t.vx)}if(t.x>450){t.x=450;t.vx=-Math.abs(t.vx)}if(t.y<50){t.y=50;t.vy=Math.abs(t.vy)}if(t.y>350){t.y=350;t.vy=-Math.abs(t.vy)}
+  t.dirT-=dt;if(t.dirT<=0){const a=frand(0,2*PI),sp=frand(200,400);t.vx=Math.cos(a)*sp;t.vy=Math.sin(a)*sp;t.dirT=frand(.7,1.8)}}}}
+
+// ---------- shooting ----------
+const accuracyPct=()=>shotsFired>0?100*shotsHit/shotsFired:0,avgReaction=()=>reactN>0?reactSum/reactN:0;
+const strafeStop=()=>speed()<15&&(sessionTime-lastMoveTime)<=.5;
+const regReact=t=>{reactSum+=(sessionTime-t.spawn)*1000;reactN++};
+const tenz=()=>curCH==3;
+function registerHit(i,zone,hx_,hy_,hz_){const t=tg[i],ss=strafeStop();shotsHit++;regReact(t);
+ let pts=100,head=true,msg="+100";
+ if(t.kind==0&&zone==2){pts=mode==STRAFE?40:30;head=false;msg=mode==STRAFE?"+40":"+30"}else if(t.kind==0){}else if(mode==FLICK){pts=150;msg="+150"}
+ if(ss){pts*=2;if(head)msg="STRAFE +200";else if(mode==FLICK)msg="STRAFE +300";else if(mode==GRID)msg="STRAFE +200";else if(mode==STRAFE)msg="STRAFE +80";else msg="STRAFE +60"}
+ score+=pts;const pc=tenz()?0xFF2222:C.ACC;
+ burst(hx_,hy_,hz_,head?22:12,head?C.WHITE:pc,400);if(head)burst(hx_,hy_,hz_,10,pc,300);
+ addPopup(t.x,t.y+t.r+20,t.z,msg,head?C.WHITE:pc);hitT=.18;hitHead=head;playSnd(head?2:1);spawn(i)}
+function trackHit(i,hx_,hy_,hz_){const t=tg[i];shotsHit++;score+=strafeStop()?20:10;if(!t.acq){t.acq=true;regReact(t)}
+ t.hp-=12;hitT=.1;hitHead=false;burst(hx_,hy_,hz_,2,C.WHITE,150);
+ if(t.hp<=0){score+=100;const pc=tenz()?0xFF2222:C.ACC;burst(t.x,t.y,t.z,26,pc,400);burst(t.x,t.y,t.z,10,C.WHITE,300);addPopup(t.x,t.y+t.r+20,t.z,"ELIMINATED +100",C.WHITE);playSnd(2);spawn(i)}}
+function shoot(){if(mode==STRAFE&&!strafeStop())return;
+ const[dx,dy,dz]=getRay();muzzleT=.06;tracerT=.08;shotsFired++;
+ const i=hitTest(dx,dy,dz);
+ if(i>=0){const t=tg[i],d=Math.hypot(t.x-px,t.y-py,t.z-pz)-t.r,hx_=px+dx*d,hy_=py+dy*d,hz_=pz+dz*d;mode==TRACK?trackHit(i,hx_,hy_,hz_):registerHit(i,Z,hx_,hy_,hz_)}
+ else if(mode!=TRACK)playSnd(0)}
+
+// ---------- state ----------
+function lock(){if(noLock)return;try{const p=cv.requestPointerLock();if(p&&p.catch)p.catch(()=>{})}catch(e){}}
+function unlock(){if(document.pointerLockElement)document.exitPointerLock()}
+function startSession(m){initSound();mode=m;score=shotsFired=shotsHit=0;reactSum=reactN=0;timeLeft=30;sessionTime=0;countdown=3;
+ px=0;py=150;pz=400;pvx=pvz=0;yaw=-90;pitch=0;fireTimer=muzzleT=tracerT=hitT=0;kW=kA=kS=kD=0;
+ tg.forEach(t=>{t.on=false;t.slot=-1});slotUsed.fill(false);pt.forEach(p=>p.on=false);pops.forEach(p=>p.on=false);
+ flickPhase=0;strafeLastX=0;lastMoveTime=-10;nT=(m==HEAD||m==GRID)?3:1;state=CD;lock()}
+const endSession=()=>{state=RES;unlock()},pauseGame=()=>{if(state!=CD&&state!=RUN)return;resumeState=state;state=PAUSE;unlock()},resumeGame=()=>{state=resumeState;lock()},goMenu=()=>{state=MENU;unlock()};
+const approach=(v,t,r)=>v<t?Math.min(v+r,t):Math.max(v-r,t);
+function movePlayer(dt){let mx=kD-kA,mz=kS-kW;if(mx&&mz){mx*=.7071;mz*=.7071}
+ const rx=mx==0?6000:(pvx*mx<0?9000:3500),rz=mz==0?6000:(pvz*mz<0?9000:3500);
+ pvx=approach(pvx,mx*moveSpeed,rx*dt);pvz=approach(pvz,mz*moveSpeed,rz*dt);px+=pvx*dt;pz+=pvz*dt;
+ if(px<-300){px=-300;pvx=0}if(px>300){px=300;pvx=0}if(pz<200){pz=200;pvz=0}if(pz>600){pz=600;pvz=0}}
+function update(dt){animT+=dt;muzzleT-=dt;tracerT-=dt;hitT-=dt;
+ for(const p of pt)if(p.on){p.x+=p.vx*dt;p.y+=p.vy*dt;p.z+=p.vz*dt;p.vy-=600*dt;p.life-=dt;if(p.life<=0)p.on=false}
+ for(const p of pops)if(p.on){p.y+=80*dt;p.life-=dt;if(p.life<=0)p.on=false}
+ if(state==CD){movePlayer(dt);countdown-=dt;if(countdown<=0){state=RUN;for(let i=0;i<nT;i++)spawn(i)}}
+ else if(state==RUN){movePlayer(dt);sessionTime+=dt;timeLeft-=dt;if(speed()>80)lastMoveTime=sessionTime;updateTargets(dt);
+  if(mode==TRACK){fireTimer-=dt;while(fireTimer<=0){fireTimer+=.1;const y=yaw*PI/180,p=pitch*PI/180;if(hitTest(Math.cos(y)*Math.cos(p),Math.sin(p),Math.sin(y)*Math.cos(p))>=0)shoot();else shotsFired++}}
+  if(timeLeft<=0){timeLeft=0;endSession()}}}
+
+// ---------- 2D helpers ----------
+const col=(h,a=1)=>{ctx.fillStyle=ctx.strokeStyle=`rgba(${h>>16&255},${h>>8&255},${h&255},${a})`};
+const rect=(x,y,w,h)=>ctx.fillRect(x,y,w,h),rectO=(x,y,w,h,l=2)=>{ctx.lineWidth=l;ctx.strokeRect(x,y,w,h)};
+const line=(a,b,c,d,l=2)=>{ctx.lineWidth=l;ctx.beginPath();ctx.moveTo(a,b);ctx.lineTo(c,d);ctx.stroke()};
+const disc=(x,y,r)=>{ctx.beginPath();ctx.arc(x,y,r,0,2*PI);ctx.fill()},ring=(x,y,r,l=2)=>{ctx.lineWidth=l;ctx.beginPath();ctx.arc(x,y,r,0,2*PI);ctx.stroke()};
+const poly=(...p)=>{ctx.beginPath();ctx.moveTo(p[0],p[1]);for(let i=2;i<p.length;i+=2)ctx.lineTo(p[i],p[i+1]);ctx.closePath();ctx.fill()};
+const grad=(x,y,w,h,a,b)=>{const g=ctx.createLinearGradient(0,y,0,y+h);g.addColorStop(0,hx(a));g.addColorStop(1,hx(b));ctx.fillStyle=g;ctx.fillRect(x,y,w,h)};
+const fnt=sc=>ctx.font=`700 ${sc*145}px "Segoe UI",Arial,sans-serif`;
+function text(x,y,s,sc=S_MD,al='left'){fnt(sc);ctx.textAlign=al;ctx.textBaseline='alphabetic';ctx.fillText(s,x,y)}
+const textC=(x,y,s,sc)=>text(x,y,s,sc,'center'),textMid=(x,y,s,sc=S_MD)=>textC(x,y+CAP*sc/2,s,sc);
+function textFit(x,y,s,sc,mw){fnt(sc);const w=ctx.measureText(s).width;text(x,y,s,w>mw?sc*mw/w:sc)}
+const inside=b=>mouseX>=b.x&&mouseX<=b.x+b.w&&mouseY>=b.y&&mouseY<=b.y+b.h,buttonAt=a=>a.findIndex(inside);
+function drawHuman(x,y,s,a=1){col(C.DACC,a);poly(x-1.8*s,y+1.4*s,x+1.8*s,y+1.4*s,x+1.3*s,y+4.4*s,x-1.3*s,y+4.4*s);poly(x-1.2*s,y+4.4*s,x-.1*s,y+4.4*s,x-.2*s,y+7*s,x-1.3*s,y+7*s);poly(x+.1*s,y+4.4*s,x+1.2*s,y+4.4*s,x+1.3*s,y+7*s,x+.2*s,y+7*s);
+ col(C.ACC,a);poly(x-1.4*s,y+1.7*s,x+1.4*s,y+1.7*s,x+s,y+3.4*s,x-s,y+3.4*s);col(C.WHITE,a);disc(x,y,s);col(C.ACC,a);ring(x,y,s,2)}
+function drawIcon(m,x,y){switch(m){
+ case 0:drawHuman(x,y-36,9);break;
+ case 1:for(let r=0;r<3;r++)for(let c=0;c<3;c++){const gx=x+(c-1)*45,gy=y+(r-1)*38,lit=(r==0&&c==1)||(r==1&&c==0)||(r==2&&c==2);if(lit){col(C.ACC);disc(gx,gy,15);col(C.WHITE);disc(gx,gy,9.5);col(C.ACC);disc(gx,gy,4)}else{col(C.ACC,.35);ring(gx,gy,15,1.5)}}break;
+ case 2:col(C.WHITE,.5);ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x-80,y+30);ctx.lineTo(x-40,y-20);ctx.lineTo(x,y+15);ctx.lineTo(x+25,y-5);ctx.stroke();col(C.ACC);disc(x+35,y-10,24);col(C.WHITE);disc(x+35,y-10,15);col(C.ACC);disc(x+35,y-10,7);break;
+ case 3:col(C.WHITE,.9);ring(x,y,14,2);col(C.ACC);disc(x,y,9);disc(x+75,y-10,12);col(C.WHITE);disc(x+75,y-10,6);col(C.ACC,.45);disc(x-75,y-10,12);col(C.WHITE,.8);line(x+18,y-3,x+56,y-9);poly(x+62,y-10,x+50,y-17,x+50,y-3);line(x-18,y-3,x-56,y-9);poly(x-62,y-10,x-50,y-17,x-50,y-3);break;
+ case 4:drawHuman(x,y-36,8);col(C.WHITE);poly(x-90,y+60,x-60,y+45,x-60,y+75);poly(x+90,y+60,x+60,y+45,x+60,y+75);line(x-55,y+60,x+55,y+60);break}}
+function drawButton(b,label){const h=inside(b);col(h?C.ACC:C.CHAR,.95);rect(b.x,b.y,b.w,b.h);col(h?C.BLACK:C.ACC);rect(b.x,b.y,6,b.h);col(h?C.WHITE:C.ACC,.8);rectO(b.x,b.y,b.w,b.h,1.5);col(h?C.BLACK:C.WHITE);textMid(b.x+b.w/2,b.y+b.h/2,label||b.label,S_MD)}
+function statBox(x,y,w,v,l){col(C.CHAR,.92);rect(x,y,w,52);col(C.ACC);rect(x,y+52,w,3);col(C.WHITE);textC(x+w/2,y+28,v,S_LG);col(C.WHITE,.7);textC(x+w/2,y+46,l,S_SM)}
+function menuBG(){grad(0,0,W,H,C.BLACK,0x0A1519);col(C.ACC,.9);poly(0,0,220,0,0,220);poly(W,H,W-220,H,W,H-220);col(C.ACC,.22);poly(0,0,340,0,0,340);poly(W,H,W-340,H,W,H-340);
+ const p=1+.06*Math.sin(animT*2);col(C.ACC,.1);ring(W/2,H/2,300*p);ring(W/2,H/2,200*p);line(W/2-380,H/2,W/2+380,H/2,1);line(W/2,H/2-380,W/2,H/2+380,1)}
+
+// ---------- screens ----------
+function drawMenu(){menuBG();col(C.ACC);fnt(.55);textC(W/2,190,"PROJECT: TUTOK 3D",.55);col(C.WHITE);textC(W/2,235,"3D VALORANT AIM TRAINING SIMULATOR",S_MD);col(C.ACC);rect(W/2-150,252,300,3);menuB.forEach(b=>drawButton(b));col(C.WHITE,.6);textC(W/2,600,"Click a button  |  ENTER: Start  |  F: Fullscreen",S_SM)}
+function drawSelect(){menuBG();col(C.WHITE);textC(W/2,100,"SELECT TRAINING MODE",.35);col(C.ACC);rect(W/2-120,120,240,3);
+ for(let i=0;i<5;i++){const b=selB[i],h=inside(b);col(C.CHAR,.97);rect(b.x,b.y,b.w,b.h);col(h?C.ACC:C.DACC);rect(b.x,b.y,b.w,46);col(h?C.BLACK:C.WHITE);text(b.x+14,b.y+33,b.label,S_LG);text(b.x+44,b.y+30,modeShort[i],S_MD);
+  col(C.BLACK);rect(b.x+10,b.y+58,b.w-20,140);drawIcon(i,b.x+b.w/2,b.y+128);col(C.WHITE,.9);for(let l=0;l<3;l++)textFit(b.x+14,b.y+232+l*22,modeDesc[i][l],S_SM,b.w-28);
+  col(h?C.WHITE:C.ACC);rectO(b.x,b.y,b.w,b.h,h?3:1.5);col(C.WHITE,h?1:.5);textC(b.x+b.w/2,b.y+b.h-14,"CLICK or press the number",S_SM)}
+ drawButton(selB[5])}
+function drawSettings(){menuBG();col(C.WHITE);textC(W/2,110,"SETTINGS",.4);col(C.ACC);rect(W/2-100,130,200,3);
+ sliders.forEach((s,i)=>{const v=s.get(),t=(v-s.lo)/(s.hi-s.lo);let b;if(i==0)b=typingSens?`${s.label}: ${sensStr}_`:`${s.label}: ${v.toFixed(3)} (Click text to Edit)`;else b=`${s.label}: ${v|0} px/s`;
+  col(C.WHITE);text(s.x,s.y-22,b,S_MD);col(C.CHAR);rect(s.x,s.y-4,s.w,8);col(C.ACC);rect(s.x,s.y-4,s.w*t,8);col(C.WHITE);disc(s.x+s.w*t,s.y,11);col(C.ACC);ring(s.x+s.w*t,s.y,11)});
+ drawButton(setB[0],soundOn?"SOUND: ON":"SOUND: OFF");drawButton(setB[1],chNames[curCH]);drawButton(setB[2]);col(C.WHITE,.6);textC(W/2,680,"Drag sliders | Keys: [ ] sensitivity   - = speed   M sound",S_SM)}
+function drawCrosshair(){const cx=W/2,cy=H/2;let sp=speed()/moveSpeed*(mode==STRAFE?60:30);sp=clampf((sp-.08)/.92,0,1);
+ if(curCH==4){col(0,.8);disc(cx,cy,3.5);col(C.WHITE);disc(cx,cy,2.5)}
+ else if(curCH==3){col(0x00FFFF);const g=2,l=4;line(cx-g-l,cy,cx-g,cy);line(cx+g,cy,cx+g+l,cy);line(cx,cy-g-l,cx,cy-g);line(cx,cy+g,cx,cy+g+l)}
+ else{if(sp>1.5){col(C.WHITE,.35);ring(cx,cy,sp,1.5)}let g=5+sp,l=11;if(curCH==1){g=3+sp;l=7}if(curCH==2){g=2+sp;l=4}
+  for(let p=0;p<2;p++){p==0?col(0,.8):col(C.WHITE);const w=p==0?(curCH==0?4:3):2;line(cx-g-l,cy,cx-g,cy,w);line(cx+g,cy,cx+g+l,cy,w);line(cx,cy-g-l,cx,cy-g,w);line(cx,cy+g,cx,cy+g+l,w)}col(C.ACC);disc(cx,cy,1.6)}
+ if(hitT>0){col(hitHead?C.WHITE:C.ACC,clampf(hitT/.1,0,1));const a=8,b=18;line(cx-b,cy-b,cx-a,cy-a,3);line(cx+a,cy-a,cx+b,cy-b,3);line(cx-b,cy+b,cx-a,cy+a,3);line(cx+a,cy+a,cx+b,cy+b,3)}}
+function drawHUD(){col(C.BLACK,.92);rect(0,0,W,70);col(C.ACC);rect(0,68,W,3);col(C.WHITE);text(20,31,modeName[mode],S_MD);col(C.WHITE,.7);text(20,54,"Status: "+(state==RUN?"RUNNING":state==PAUSE?"PAUSED":"GET READY"),S_SM);
+ const sec=Math.ceil(timeLeft);(timeLeft<=5&&(animT*4)%1<.5)?col(C.WHITE):col(C.ACC);textC(W/2-160,48,String(Math.floor(sec/60)).padStart(2,'0')+":"+String(sec%60).padStart(2,'0'),.28);
+ statBox(740,8,150,String(score),"SCORE");statBox(900,8,150,Math.round(accuracyPct())+"%","ACCURACY");statBox(1060,8,190,reactN>0?String(Math.round(avgReaction())):"--","AVG. REACTION (ms)");
+ const sp=speed()/moveSpeed,mv=sp>.15;col(C.CHAR,.9);rect(20,686,210,24);col(mv?C.DACC:C.ACC,.9);rect(20,686,210*clampf(sp,0,1),24);col(C.WHITE);rectO(20,686,210,24,1);textMid(125,698,mv?"MOVING - INACCURATE":"STILL - ACCURATE",S_SM);
+ col(C.WHITE,.6);text(250,703,mode==TRACK?"WASD Move | Mouse Aim | AUTO-FIRE on target | ESC Pause | R Restart":"WASD Move | Mouse Aim | LMB Shoot | ESC Pause | R Restart",S_SM);
+ if(mode==STRAFE){col(C.ACC);textFit(900,703,"Tap opposite key to stop, then shoot!",S_SM,360)}}
+function render3D(){
+ const y=yaw*PI/180,p=pitch*PI/180,dx=Math.cos(y)*Math.cos(p),dy=Math.sin(p),dz=Math.sin(y)*Math.cos(p);
+ cam.position.set(px,py,pz);cam.lookAt(px+dx,py+dy,pz+dz);cam.updateMatrixWorld();
+ const hi=state==RUN?hitTest(dx,dy,dz):-1,cH=tenz()?0xFF2222:C.ACC,cB=tenz()?0xAA0000:C.DACC;
+ tm.forEach((m,i)=>{const t=tg[i];m.g.visible=i<nT&&t.on;if(!m.g.visible)return;m.g.position.set(t.x,t.y,t.z);m.h.scale.setScalar(t.r);m.h.material.color.setHex(i==hi?C.WHITE:cH);
+  m.b.visible=t.kind==0;m.b.material.color.setHex(cB);m.b.position.y=-3.5*t.r;m.b.scale.set(3*t.r,5*t.r,2*t.r)});
+ pt.forEach((q,i)=>{const a=q.on?q.life/q.max:0;pPos.set(q.on?[q.x,q.y,q.z]:[0,-9999,0],i*3);pCol.set([(q.c>>16&255)/255*a,(q.c>>8&255)/255*a,(q.c&255)/255*a],i*3)});
+ pg.attributes.position.needsUpdate=pg.attributes.color.needsUpdate=true;
+ const mz=muzzleT>0;gun.position.set(22+(mz?frand(-1,1):0),-18+(mz?frand(0,2):0),-40+(mz?3:0));gFlash.visible=mz;tracer.visible=tracerT>0;trM.opacity=clampf(tracerT/.08,0,1);
+ R.clear();R.render(scene,cam);R.clearDepth();R.render(gscene,gcam)}
+function drawPopups(){for(const q of pops)if(q.on){const v=new THREE.Vector3(q.x,q.y,q.z).project(cam);if(v.z<1){const sx=((v.x*.5+.5)*winW-offX)/vs,sy=((1-(v.y*.5+.5))*winH-offY)/vs;col(q.c,clampf(q.life/.4,0,1));text(sx,sy,q.s,S_MD)}}}
+const dim=a=>{col(0,a);rect(0,0,W,H)};
+function drawPaused(){dim(.65);col(C.BLACK,.95);rect(440,150,400,420);col(C.ACC);rect(440,150,400,5);col(C.WHITE);textC(W/2,225,"PAUSED",.35);pauseB.forEach(b=>drawButton(b));col(C.WHITE,.6);textC(W/2,550,"ESC: Resume",S_SM)}
+function drawResults(){menuBG();col(C.ACC);textC(W/2,130,"TRAINING COMPLETE",.4);col(C.WHITE);textC(W/2,175,modeName[mode],S_MD);col(C.ACC);rect(W/2-120,190,240,3);
+ const v=[String(score),Math.round(accuracyPct())+"%",reactN>0?String(Math.round(avgReaction())):"--"],lab=["SCORE","ACCURACY","AVG. REACTION (ms)"];
+ for(let i=0;i<3;i++){const x=130+i*360;col(C.CHAR,.95);rect(x,250,300,220);col(C.ACC);rect(x,250,300,5);col(C.WHITE);textC(x+150,385,v[i],.6);col(C.WHITE,.8);textC(x+150,440,lab[i],S_MD)}
+ col(C.WHITE,.7);textC(W/2,520,`Shots fired: ${shotsFired}    Hits: ${shotsHit}`,S_SM);resB.forEach(b=>drawButton(b));col(C.WHITE,.6);textC(W/2,650,"ENTER / R: Retry   |   ESC: Main Menu",S_SM)}
+function display(){const d=devicePixelRatio||1;ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,cv.width,cv.height);
+ const game=state==CD||state==RUN||state==PAUSE;
+ if(game)render3D();else{R.clear();ctx.fillStyle=hx(C.BLACK);ctx.fillRect(0,0,cv.width,cv.height)}
+ ctx.setTransform(d*vs,0,0,d*vs,d*offX,d*offY);
+ if(state==MENU)drawMenu();else if(state==SEL)drawSelect();else if(state==SET)drawSettings();else if(state==RES)drawResults();
+ else{drawPopups();if(state==CD){dim(.35);col(C.ACC);textC(W/2,380,String(Math.ceil(countdown)),1.4);col(C.WHITE);textC(W/2,440,"GET READY",S_LG)}
+  else if(state==RUN){drawCrosshair();drawHUD()}else drawPaused()}
+ cv.style.cursor=((state==CD||state==RUN)&&(document.pointerLockElement||noLock))?'none':'default'}
+
+// ---------- input ----------
+const toVirtual=e=>{mouseX=(e.clientX-offX)/vs;mouseY=(e.clientY-offY)/vs};
+function setSlider(i){const s=sliders[i];s.set(s.lo+clampf((mouseX-s.x)/s.w,0,1)*(s.hi-s.lo))}
+const sliderAt=()=>sliders.findIndex(s=>mouseX>=s.x-14&&mouseX<=s.x+s.w+14&&Math.abs(mouseY-s.y)<=15);
+const commitSens=()=>{typingSens=false;if(sensStr.length&&!isNaN(parseFloat(sensStr)))sens=clampf(parseFloat(sensStr),.01,2)};
+addEventListener('mousemove',e=>{
+ if(state==CD||state==RUN){if(document.pointerLockElement||noLock){yaw+=e.movementX*sens*VAL_YAW;pitch=clampf(pitch-e.movementY*sens*VAL_YAW,-89,89)}}
+ else{toVirtual(e);if(state==SET&&dragSlider>=0){typingSens=false;setSlider(dragSlider)}}});
+addEventListener('mouseup',()=>dragSlider=-1);
+addEventListener('mousedown',e=>{if(e.button!=0)return;initSound();
+ if(state==RUN){if(mode!=TRACK)shoot();return}if(state==CD)return;toVirtual(e);let b;
+ switch(state){
+ case MENU:b=buttonAt(menuB);if(b==0)state=SEL;else if(b==1){settingsFrom=MENU;state=SET}else if(b==2)window.close();break;
+ case SEL:b=buttonAt(selB);if(b>=0&&b<=4)startSession(b);else if(b==5)state=MENU;break;
+ case SET:if(mouseX>=sliders[0].x&&mouseX<=sliders[0].x+400&&mouseY>=sliders[0].y-40&&mouseY<=sliders[0].y-12){typingSens=true;sensStr=sens.toFixed(3)}
+  else{if(typingSens)commitSens();dragSlider=sliderAt();if(dragSlider>=0)setSlider(dragSlider);else{b=buttonAt(setB);if(b==0)soundOn=!soundOn;else if(b==1)curCH=(curCH+1)%5;else if(b==2)state=settingsFrom}}break;
+ case PAUSE:b=buttonAt(pauseB);if(b==0)resumeGame();else if(b==1)startSession(mode);else if(b==2){settingsFrom=PAUSE;state=SET}else if(b==3)goMenu();break;
+ case RES:b=buttonAt(resB);if(b==0)startSession(mode);else if(b==1)goMenu();break}});
+addEventListener('keydown',e=>{
+ if(["Escape","Backspace"," ","-","=","["].includes(e.key)||e.key.length==1&&state>=CD)e.preventDefault();
+ let k=e.key;
+ if(state==SET&&typingSens){if(k=="Enter"||k=="Escape")commitSens();else if(k=="Backspace")sensStr=sensStr.slice(0,-1);else if(/^[0-9.]$/.test(k)&&sensStr.length<10)sensStr+=k;return}
+ if(e.repeat)return;k=k.length==1?k.toLowerCase():k;initSound();
+ if(k=='[')sens=clampf(sens-.01,.01,2);if(k==']')sens=clampf(sens+.01,.01,2);
+ if(k=='-')moveSpeed=clampf(moveSpeed-20,150,600);if(k=='='||k=='+')moveSpeed=clampf(moveSpeed+20,150,600);
+ if(k=='m')soundOn=!soundOn;
+ if(k=='f'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen().catch(()=>{});return}
+ if(k=='Escape'){switch(state){case SEL:state=MENU;break;case SET:state=settingsFrom;break;case CD:case RUN:pauseGame();break;case PAUSE:resumeGame();break;case RES:goMenu();break}return}
+ if(k=='w')kW=1;if(k=='a')kA=1;if(k=='s')kS=1;if(k=='d')kD=1;
+ if(k=='r'&&state>=CD)startSession(mode);
+ if(state==MENU&&k=='Enter')state=SEL;
+ if(state==SEL&&k>='1'&&k<='5')startSession(+k-1);
+ if(state==RES&&k=='Enter')startSession(mode)});
+addEventListener('keyup',e=>{const k=e.key.toLowerCase();if(k=='w')kW=0;if(k=='a')kA=0;if(k=='s')kS=0;if(k=='d')kD=0});
+addEventListener('blur',()=>{kW=kA=kS=kD=0;pauseGame()});
+document.addEventListener('pointerlockchange',()=>{if(document.pointerLockElement===cv)gotLock=true;else if((state==CD||state==RUN)&&!noLock)pauseGame()});
+document.addEventListener('pointerlockerror',()=>{if(!gotLock)noLock=true});
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+
+let last=performance.now();
+(function frame(now){const dt=Math.min((now-last)/1000,.05);last=now;update(dt);display();requestAnimationFrame(frame)})(last);
+</script></body></html>
